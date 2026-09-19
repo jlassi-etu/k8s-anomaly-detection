@@ -1,30 +1,263 @@
-# Environnement Python
-venv/
-__pycache__/
-*.pyc
+name: CI
 
-# Secrets et identifiants — NE JAMAIS committer
-scripts/start_exporter_with_email.sh
-inference/k8s-ai-inference-secret.yaml
-.env
-*.pem
-*.key
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
 
-# Modèles entraînés: exclus partout SAUF dans inference/, où ils sont
-# nécessaires au build de l'image Docker par le pipeline CI/CD. Régénérables
-# via ml/01-05 si besoin.
-*.joblib
-!inference/*.joblib
+jobs:
+  secret-scan:
+    name: Détection de secrets commités
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Scanner l'historique complet avec gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-# Données générées (régénérables via collection/collect_metrics.py et ml/*)
-data/
-logs/
-figures/
-figures_test*/
+  python-lint:
+    name: Lint Python (flake8)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Installer flake8
+        run: pip install flake8
+      - name: "Lint (erreurs bloquantes: syntaxe, imports, variables non définies)"
+        run: |
+          flake8 collection ml inference remediation monitoring scripts \
+            --select=E9,F821,F401,F841 --show-source --statistics
 
-# Divers
-nohup.out
+  python-syntax:
+    name: Vérification syntaxe Python
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compiler tous les fichiers .py (détecte les erreurs de syntaxe)
+        run: |
+          python3 -m compileall -q collection ml inference remediation monitoring scripts
+          echo "OK: tous les fichiers Python compilent sans erreur de syntaxe."
 
-# Kubeconfig (si jamais copié dans le repo)
-kubeconfig
-.kube/
+  dependency-scan:
+    name: Scan de vulnérabilités (dépendances)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Installer pip-audit
+        run: pip install pip-audit
+      - name: Scanner les requirements.txt
+        run: |
+          for req in inference/requirements.txt remediation/requirements.txt; do
+            echo "=== $req ==="
+            pip-audit -r "$req" || true
+          done
+          echo "Scan terminé (non bloquant pour l'instant)."
+
+  yaml-lint:
+    name: Lint YAML (style strict)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: yamllint
+        uses: ibiqlik/action-yamllint@v3
+        with:
+          config_data: |
+            extends: default
+            rules:
+              line-length: disable
+              document-start: disable
+              truthy: disable
+          file_or_dir: infra inference remediation monitoring .github
+
+  dockerfile-lint:
+    name: Lint des Dockerfiles (hadolint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: hadolint - inference/Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: inference/Dockerfile
+          failure-threshold: error
+      - name: hadolint - remediation/Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: remediation/Dockerfile
+          failure-threshold: error
+
+  validate-manifests:
+    name: Validation YAML / JSON (contenu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Installer PyYAML
+        run: pip install pyyaml
+      - name: Valider tous les manifestes Kubernetes / Chaos Mesh
+        run: |
+          python3 - <<'EOF'
+          import glob, sys, yaml
+
+          patterns = ["infra/**/*.yaml", "inference/*.yaml", "remediation/*.yaml"]
+          files = []
+          for p in patterns:
+              files += glob.glob(p, recursive=True)
+          files = [f for f in files if "secret.yaml" not in f or f.endswith(".example")]
+
+          errors = 0
+          for f in sorted(set(files)):
+              try:
+                  docs = list(yaml.safe_load_all(open(f)))
+                  print(f"OK  {f} ({len(docs)} document(s))")
+              except yaml.YAMLError as e:
+                  print(f"ERREUR  {f}: {e}")
+                  errors += 1
+
+          if errors:
+              print(f"\n{errors} fichier(s) YAML invalide(s).")
+              sys.exit(1)
+          print(f"\nTous les manifestes YAML sont valides ({len(files)} fichiers).")
+          EOF
+      - name: Valider le dashboard Grafana (JSON)
+        run: |
+          python3 -c "
+          import json
+          d = json.load(open('monitoring/grafana-dashboard.json'))
+          assert 'panels' in d, 'clé panels manquante'
+          print(f\"OK: dashboard Grafana valide ({len(d['panels'])} panneaux).\")
+          "
+      - name: Valider anomaly_schedule.json
+        run: |
+          python3 -c "
+          import json
+          events = json.load(open('collection/anomaly_schedule.json'))
+          assert isinstance(events, list) and len(events) > 0
+          for e in events:
+              assert 'type' in e and 'manifest' in e and 'start_min' in e and 'duration_min' in e
+          print(f\"OK: planning valide ({len(events)} anomalies programmées).\")
+          "
+
+  docker-build:
+    name: Test de build des images Docker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build inference/ (skip si modèles .joblib absents, gitignorés)
+        run: |
+          if ls inference/*.joblib >/dev/null 2>&1; then
+            docker build -t ai-inference-exporter:ci inference/
+          else
+            echo "SKIP: modèles .joblib absents du dépôt (attendu, régénérés par le pipeline ML)."
+          fi
+      - name: Build remediation/ (aucune dépendance externe, doit toujours construire)
+        run: docker build -t remediation-controller:ci remediation/
+
+  publish-images:
+    name: Publier les images sur GitHub Container Registry
+    runs-on: ubuntu-latest
+    needs: [python-syntax, validate-manifests, docker-build]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Initialiser Docker Buildx (driver docker-container, plus fiable pour le push)
+        uses: docker/setup-buildx-action@v3
+      - name: Connexion à ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build + push remediation-controller (toujours possible, pas de secret requis)
+        uses: docker/build-push-action@v5
+        with:
+          context: remediation/
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}/remediation-controller:latest
+            ghcr.io/${{ github.repository }}/remediation-controller:${{ github.sha }}
+      - name: Vérifier la présence des modèles entraînés
+        id: check_models
+        run: |
+          if ls inference/*.joblib >/dev/null 2>&1; then
+            echo "has_models=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_models=false" >> "$GITHUB_OUTPUT"
+            echo "SKIP: modèles .joblib absents, image ai-inference-exporter non publiée."
+          fi
+      - name: Build + push ai-inference-exporter (seulement si modèles présents)
+        if: steps.check_models.outputs.has_models == 'true'
+        uses: docker/build-push-action@v5
+        with:
+          context: inference/
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}/ai-inference-exporter:latest
+            ghcr.io/${{ github.repository }}/ai-inference-exporter:${{ github.sha }}
+
+  deploy:
+    name: Déployer sur le cluster (self-hosted runner)
+    runs-on: self-hosted
+    needs: [publish-images]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Vérifier l'accès au cluster
+        run: kubectl cluster-info --context kind-k8s-anomaly-cluster
+      - name: Rafraîchir l'image ai-inference-exporter (si des modèles sont présents dans le dépôt)
+        run: |
+          if ls inference/*.joblib >/dev/null 2>&1; then
+            kubectl apply -f inference/k8s-ai-inference-secret.yaml -f inference/k8s-ai-inference.yaml
+            kubectl rollout restart deployment/ai-inference-exporter -n monitoring
+            kubectl rollout status deployment/ai-inference-exporter -n monitoring --timeout=120s
+          else
+            echo "SKIP: pas de modèles .joblib dans le dépôt, déploiement ai-inference-exporter ignoré."
+          fi
+      - name: Rafraîchir l'image remediation-controller
+        run: |
+          kubectl apply -f remediation/k8s-remediation.yaml
+          kubectl rollout restart deployment/remediation-controller -n monitoring
+          kubectl rollout status deployment/remediation-controller -n monitoring --timeout=120s
+      - name: Vérifier l'état final des pods
+        run: kubectl get pods -n monitoring -l 'app in (ai-inference-exporter,remediation-controller)'
+
+  summary:
+    name: Résumé
+    runs-on: ubuntu-latest
+    needs: [secret-scan, python-lint, python-syntax, dependency-scan, yaml-lint,
+            dockerfile-lint, validate-manifests, docker-build]
+    if: always()
+    steps:
+      - name: Statut global
+        run: |
+          echo "secret-scan: ${{ needs.secret-scan.result }}"
+          echo "python-lint: ${{ needs.python-lint.result }}"
+          echo "python-syntax: ${{ needs.python-syntax.result }}"
+          echo "dependency-scan: ${{ needs.dependency-scan.result }}"
+          echo "yaml-lint: ${{ needs.yaml-lint.result }}"
+          echo "dockerfile-lint: ${{ needs.dockerfile-lint.result }}"
+          echo "validate-manifests: ${{ needs.validate-manifests.result }}"
+          echo "docker-build: ${{ needs.docker-build.result }}"
+          if [ "${{ needs.secret-scan.result }}" != "success" ] || \
+             [ "${{ needs.python-syntax.result }}" != "success" ] || \
+             [ "${{ needs.validate-manifests.result }}" != "success" ] || \
+             [ "${{ needs.docker-build.result }}" != "success" ]; then
+            echo "Au moins un job bloquant a échoué."
+            exit 1
+          fi
