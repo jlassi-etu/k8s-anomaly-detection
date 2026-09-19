@@ -1,0 +1,23 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: StressChaos
+metadata:
+  name: resource-saturation-anomaly
+  namespace: chaos-mesh
+spec:
+  mode: all
+  selector:
+    namespaces:
+      - workload
+    labelSelectors:
+      app: sample-workload
+  stressors:
+    cpu:
+      workers: 4
+      load: 100
+    memory:
+      workers: 2
+      size: "480MiB"
+  # Volontairement proche des limits du Deployment (cpu: 500m, memory: 512Mi)
+  # pour observer une vraie saturation (throttling CPU, OOM proche) plutôt
+  # qu'une simple charge élevée.
+  duration: "20m"

@@ -1,0 +1,18 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: abnormal-drop-anomaly
+  namespace: chaos-mesh
+spec:
+  action: pod-failure
+  mode: fixed-percent
+  value: "50"
+  selector:
+    namespaces:
+      - workload
+    labelSelectors:
+      app: sample-workload
+  # pod-failure rend les pods ciblés indisponibles (containers stoppés) pendant
+  # toute la durée, puis les restaure automatiquement — simule une baisse
+  # anormale de performance/disponibilité suivie d'une reprise.
+  duration: "10m"

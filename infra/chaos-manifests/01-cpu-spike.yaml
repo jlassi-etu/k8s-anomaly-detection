@@ -1,0 +1,18 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: StressChaos
+metadata:
+  name: cpu-spike-anomaly
+  namespace: chaos-mesh
+spec:
+  mode: fixed-percent
+  value: "50"
+  selector:
+    namespaces:
+      - workload
+    labelSelectors:
+      app: sample-workload
+  stressors:
+    cpu:
+      workers: 2
+      load: 100
+  duration: "10m"

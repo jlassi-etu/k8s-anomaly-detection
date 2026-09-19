@@ -1,0 +1,37 @@
+[
+  {
+    "type": "cpu_spike",
+    "manifest": "infra/chaos-manifests/01-cpu-spike.yaml",
+    "resource": "StressChaos/cpu-spike-anomaly",
+    "start_min": 30,
+    "duration_min": 10
+  },
+  {
+    "type": "memory_leak",
+    "manifest": "infra/chaos-manifests/02-memory-leak.yaml",
+    "resource": "StressChaos/memory-leak-anomaly",
+    "start_min": 70,
+    "duration_min": 20
+  },
+  {
+    "type": "resource_saturation",
+    "manifest": "infra/chaos-manifests/03-resource-saturation.yaml",
+    "resource": "StressChaos/resource-saturation-anomaly",
+    "start_min": 120,
+    "duration_min": 20
+  },
+  {
+    "type": "network_anomaly",
+    "manifest": "infra/chaos-manifests/04-network-anomaly.yaml",
+    "resource": "NetworkChaos/network-anomaly",
+    "start_min": 170,
+    "duration_min": 15
+  },
+  {
+    "type": "abnormal_drop",
+    "manifest": "infra/chaos-manifests/05-abnormal-drop.yaml",
+    "resource": "PodChaos/abnormal-drop-anomaly",
+    "start_min": 215,
+    "duration_min": 10
+  }
+]

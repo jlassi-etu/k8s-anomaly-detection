@@ -1,0 +1,21 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: StressChaos
+metadata:
+  name: memory-leak-anomaly
+  namespace: chaos-mesh
+spec:
+  mode: fixed-percent
+  value: "50"
+  selector:
+    namespaces:
+      - workload
+    labelSelectors:
+      app: sample-workload
+  stressors:
+    memory:
+      workers: 1
+      size: "400MiB"
+  # Note: StressChaos alloue la mémoire de façon continue tant que le stresseur
+  # tourne, ce qui se traduit dans les métriques par une croissance progressive
+  # de container_memory_working_set_bytes — comportement représentatif d'une fuite.
+  duration: "20m"

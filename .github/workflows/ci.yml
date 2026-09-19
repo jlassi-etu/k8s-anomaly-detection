@@ -1,0 +1,30 @@
+# Environnement Python
+venv/
+__pycache__/
+*.pyc
+
+# Secrets et identifiants — NE JAMAIS committer
+scripts/start_exporter_with_email.sh
+inference/k8s-ai-inference-secret.yaml
+.env
+*.pem
+*.key
+
+# Modèles entraînés: exclus partout SAUF dans inference/, où ils sont
+# nécessaires au build de l'image Docker par le pipeline CI/CD. Régénérables
+# via ml/01-05 si besoin.
+*.joblib
+!inference/*.joblib
+
+# Données générées (régénérables via collection/collect_metrics.py et ml/*)
+data/
+logs/
+figures/
+figures_test*/
+
+# Divers
+nohup.out
+
+# Kubeconfig (si jamais copié dans le repo)
+kubeconfig
+.kube/
