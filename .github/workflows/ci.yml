@@ -223,7 +223,7 @@ jobs:
       - name: Rafraîchir l'image ai-inference-exporter (si des modèles sont présents dans le dépôt)
         run: |
           if ls inference/*.joblib >/dev/null 2>&1; then
-            kubectl apply -f inference/k8s-ai-inference-secret.yaml -f inference/k8s-ai-inference.yaml
+            kubectl apply -f inference/k8s-ai-inference.yaml
             kubectl rollout restart deployment/ai-inference-exporter -n monitoring
             kubectl rollout status deployment/ai-inference-exporter -n monitoring --timeout=120s
           else
